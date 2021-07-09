@@ -1,0 +1,170 @@
+buildscript {
+    repositories {
+		maven {
+            url "https://na.artifactory.swg-devops.com/artifactory/wh-imaging-external-maven-virtual"
+            credentials {
+                username = "${taasArtifactoryUsername}"
+                password = "${taasArtifactoryPassword}"
+            }
+            metadataSources {
+                mavenPom()
+                artifact()
+            }
+        }
+	}
+}
+
+plugins {
+    id "ru.vyarus.use-python" version "2.2.0"
+    id "org.sonarqube" version "3.0"
+}
+
+group = 'com.ibm.watson.health.cdp'
+version = "1.0.0"
+description = """Hl7 batch Receiver"""
+
+sonarqube {
+    properties {
+        property "sonar.sources", pySrcDir
+        property "sonar.tests", pyTestDir
+        property "sonar.python.coverage.reportPaths", pyXmlCoveragePath
+        property "sonar.python.xunit.reportPath", pyTestReportPath
+    }
+}
+
+python {
+
+    //Python dependencies start
+    pip 'kafka-python:2.0.2'
+    pip 'pydantic:1.8.2'
+    pip 'fastapi:0.63.0'
+    pip 'python-multipart:0.0.5' // Needed to send file and used indirectly by hl7batchzip API.
+    pip 'whi-caf-lib-configreader:3.1.0'
+    pip 'whpa-cdp-minio-python-client:0.0.1'
+    pip 'whpa-cdp-lib-postgres:0.0.1'
+
+    envPath = '/opt/ibm/whi/app'
+    }
+
+
+task cdpHl7BatchSetupBuild(type: PythonTask) {
+    module = 'pip'
+    extraArgs = ['install', 'pytest==6.2.4', 'pytest-cov==2.7.1', 'pytest-asyncio==0.15.1', 'pytest-mock==3.6.1', 'twine==1.14.0', 'flake8==3.7.8', 'black==19.10b0']
+}
+
+task cdpHl7BatchGenerateReqs {
+    doLast {
+        def newFile = new File("${project.projectDir}/pinned.txt")
+        newFile.delete()
+        newFile.createNewFile()
+        python.modules.each { module ->
+            newFile.append(module.replace(":", "==") + "\n")
+        }
+    }
+}
+
+task cdpHl7BatchSetupBuildProperties {
+    doLast {
+        def newFile = new File("${project.projectDir}/setup.properties")
+        newFile.delete()
+        newFile.createNewFile()
+        newFile.append("[default]")
+        newFile.append("\nproject_name=${project.name}")
+        newFile.append("\nproject_version=${project.version}")
+        newFile.append("\nproject_srcDir=${pySrcDir}")
+    }
+}
+
+task cdpHl7BatchBuildWheel(type: PythonTask) {
+    command = 'setup.py'
+    extraArgs = ['bdist_wheel', '-d', pyDistDir, '-k']
+}
+
+task cdpHl7BatchTestPrep(type: PythonTask) {
+    command = 'setup.py'
+    extraArgs = ['develop']
+}
+
+task cdpHl7BatchTest(type: PythonTask) {
+    module = 'pytest'
+    extraArgs = [pyTestDir, '--junitxml='+pyTestReportPath, '-v']
+}
+
+task cdpHl7IntegrationBatchTest(type: PythonTask) {
+    // Required to override the default behaviour of the postgres-lib. Ideally the postgres-lib will allow
+    // paramitization in the future so we don't have to do this.
+    environment "WHPA_CDP_POSTGRES_CONFIG_FILE", "config/test_postgres.ini"
+    environment "WHPA_CDP_POSTGRES_SECRETS", "secrets/postgres"
+
+    module = 'pytest'
+    extraArgs = [pyIntegrationTestDir, '--junitxml='+pyTestReportPath, '-v', '-s']
+}
+
+task cdpHl7BatchCoverage(type: PythonTask) {
+    module = 'pytest'
+    extraArgs = [pyTestDir, '--cov', pySrcDir, '--cov-report=xml:'+pyXmlCoveragePath, '--cov-report=html:'+pyHtmlCoveragePath, '--cov-report=term']
+}
+
+task cdpHl7BatchClean {
+    doLast {
+        exec {
+            commandLine 'rm', '-rf', 'build'
+        }
+    }
+}
+
+task cdpHl7BatchPublishArtifacts(type: PythonTask) {
+    doFirst {
+        def taasArtifactoryUsername = "${taasArtifactoryUsername}"
+        def taasArtifactoryPassword = "${taasArtifactoryPassword}"
+        module = 'twine'
+        extraArgs = ['upload', '--repository-url', whiPypiRepositoryUrl, '-u', taasArtifactoryUsername, '-p', taasArtifactoryPassword, pyDistDir+'/*.whl']
+    }
+}
+
+task cdpHl7BatchFlake8(type: PythonTask) {
+    module = 'flake8'
+    extraArgs = [pySrcDir]
+}
+
+task cdpHl7BatchBlack(type: PythonTask) {
+    module = 'black'
+    extraArgs = [pySrcDir]
+}
+
+task dockerBuild(type: Exec) {
+
+    commandLine 'docker', 'run', '-v', System.getProperty("user.dir")+':/tmp/project', '-v','/var/run/docker.sock:/var/run/docker.sock','-e','PROJECT_ROOT=/tmp/project', '-e' ,'PROJECT_DIST='+pyDistDir+'/*.whl', '-e', 'PROJECT_YAML=project.yaml' ,'-e','IMAGE_NAME=hl7batchreceiver:1.0', 'py-service-wrapper-build-utils:latest'
+}
+
+task build {}
+task test {}
+task coverage {}
+task uploadArchives {}
+task flake8 {}
+task clean {}
+task black {}
+
+project.tasks.cdpHl7IntegrationBatchTest.dependsOn project.tasks.cdpHl7BatchSetupBuild
+project.tasks.cdpHl7IntegrationBatchTest.dependsOn project.tasks.cdpHl7BatchTestPrep
+
+project.tasks.cdpHl7BatchTest.dependsOn project.tasks.cdpHl7BatchSetupBuild
+project.tasks.cdpHl7BatchTest.dependsOn project.tasks.cdpHl7BatchTestPrep
+project.tasks.cdpHl7BatchTestPrep.dependsOn project.tasks.cdpHl7BatchSetupBuildProperties
+project.tasks.cdpHl7BatchCoverage.dependsOn project.tasks.cdpHl7BatchSetupBuild
+project.tasks.cdpHl7BatchCoverage.dependsOn project.tasks.cdpHl7BatchTestPrep
+project.tasks.cdpHl7BatchPublishArtifacts.dependsOn project.tasks.cdpHl7BatchSetupBuild
+project.tasks.cdpHl7BatchFlake8.dependsOn project.tasks.cdpHl7BatchSetupBuild
+
+project.tasks.build.dependsOn project.tasks.cdpHl7BatchSetupBuild
+project.tasks.build.dependsOn project.tasks.cdpHl7BatchSetupBuildProperties
+project.tasks.build.dependsOn project.tasks.cdpHl7BatchGenerateReqs
+project.tasks.build.dependsOn project.tasks.cdpHl7BatchTest
+project.tasks.build.finalizedBy project.tasks.cdpHl7BatchBuildWheel
+
+project.tasks.test.finalizedBy project.tasks.cdpHl7BatchTest
+project.tasks.coverage.finalizedBy project.tasks.cdpHl7BatchCoverage
+project.tasks.clean.finalizedBy project.tasks.cdpHl7BatchClean
+project.tasks.uploadArchives.finalizedBy project.tasks.cdpHl7BatchPublishArtifacts
+project.tasks.flake8.finalizedBy project.tasks.cdpHl7BatchFlake8
+project.tasks.black.finalizedBy project.tasks.cdpHl7BatchBlack

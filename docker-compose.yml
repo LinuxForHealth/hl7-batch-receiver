@@ -1,0 +1,81 @@
+version: "3.2"
+services:
+  zookeeper:
+    image: "docker.io/bitnami/zookeeper:3-debian-10"
+    ports:
+      - "2181:2181"
+    volumes:
+      - "zookeeper_data:/bitnami"
+    environment:
+      - ALLOW_ANONYMOUS_LOGIN=yes
+  kafka:
+    image: "docker.io/bitnami/kafka:2-debian-10"
+    ports:
+      - "9092:9092"
+      - "9093:9093"
+    volumes:
+      - "kafka_data:/bitnami"
+    environment:
+      - KAFKA_CFG_ZOOKEEPER_CONNECT=zookeeper:2181
+      - ALLOW_PLAINTEXT_LISTENER=yes
+      - KAFKA_CFG_LISTENER_SECURITY_PROTOCOL_MAP=CLIENT:PLAINTEXT,EXTERNAL:PLAINTEXT
+      - KAFKA_CFG_LISTENERS=CLIENT://:9092,EXTERNAL://:9093
+      - KAFKA_CFG_ADVERTISED_LISTENERS=CLIENT://kafka:9092,EXTERNAL://localhost:9093
+      - KAFKA_INTER_BROKER_LISTENER_NAME=CLIENT
+    depends_on:
+      - zookeeper
+  kafdrop:
+    image: docker.io/linuxforhealth/kafdrop:latest
+    restart: "always"
+    ports:
+      - 9000:9000
+    environment:
+      KAFKA_BROKERCONNECT: "kafka:9092"
+      JVM_OPTS: "-Xms16M -Xmx48M -Xss180K -XX:-TieredCompilation -XX:+UseStringDeduplication -noverify"
+    depends_on:
+      - "kafka"
+  batch-receiver:
+    image: "hl7batchreceiver:0.0.3" # or use the latest in artifactory
+    ports:
+      - "5000:5000"
+    environment:
+      WHPA_CDP_BATCH_RECEIVER_KAFKA_CONFIG: "/var/ibm/whuser/kafka.ini"
+      WHPA_CDP_BATCH_RECEIVER_MINIO_CONFIG: "/var/ibm/whuser/minio.ini"
+      WHPA_CDP_MINIO_SECRETS: "/var/ibm/wh/secrets/minio/"
+      WHPA_CDP_POSTGRES_SECRETS: "/var/ibm/wh/secrets/postgres/"
+      WHPA_CDP_POSTGRES_CONFIG_FILE: "/var/ibm/whuser/postgres.ini"
+    volumes:
+      - "./config:/var/ibm/whuser"
+      - "./secrets/minio:/var/ibm/wh/secrets/minio/"
+      - "./secrets/postgres:/var/ibm/wh/secrets/postgres/"
+    depends_on:
+      - "kafka"
+  minio:
+    image: minio/minio:latest
+    ports:
+      - "9001:9000"
+    volumes:
+      - data1-1:/data
+    command: server /data
+  postgres:
+      image: postgres:13.1
+      container_name: postgres-docker
+      ports:
+        - 5432:5432
+      environment:
+        - POSTGRES_PASSWORD=postgres
+  # nifi:
+  #   image: apache/nifi:1.12.1
+  #   container_name: nifi
+  #   ports:
+  #     - 8080:8080 # Unsecured HTTP Web Port
+  #   environment:
+  #     - NIFI_WEB_HTTP_PORT=8080
+  #   volumes:
+  #     - "./volumes/nifi/conf:/opt/nifi/nifi-current/conf"
+volumes:
+  zookeeper_data:
+    driver: local
+  kafka_data:
+    driver: local
+  data1-1:

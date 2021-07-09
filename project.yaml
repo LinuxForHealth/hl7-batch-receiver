@@ -1,0 +1,16 @@
+version: 1
+project:
+  name: hl7BatchReceiver
+  version: 1
+  module: rest.endpoints_module
+  entrypoints:
+    - name: ep1
+      entrypoint: ping
+      path: ping
+      methods:
+        - GET
+    - name: ep3
+      entrypoint: upload_hl7_batchzip
+      path: upload_hl7_batchzip
+      methods:
+        - POST
